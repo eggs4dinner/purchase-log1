@@ -1,0 +1,12 @@
+{
+  "name": "roblox-purchase-log",
+  "version": "1.0.0",
+  "description": "Logs game pass and developer product purchases from a Roblox experience",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
