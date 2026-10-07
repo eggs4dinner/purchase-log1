@@ -97,39 +97,40 @@ const PAGE = `<!doctype html>
 <title>Ebike Police Escape · Sales</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Inter+Tight:wght@500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet">
 <style>
   :root {
     color-scheme: dark;
     --bg: #000000;
-    --glass: rgba(255, 255, 255, 0.055);
-    --glass-strong: rgba(255, 255, 255, 0.09);
-    --edge: rgba(255, 255, 255, 0.12);
-    --edge-hi: rgba(255, 255, 255, 0.28);
+    --glass: rgba(255, 255, 255, 0.035);
+    --glass-strong: rgba(255, 255, 255, 0.075);
+    --edge: rgba(255, 255, 255, 0.16);
+    --edge-hi: rgba(255, 255, 255, 0.32);
     --text: #f5f5f7;
     --text-2: rgba(245, 245, 247, 0.68);
     --text-3: rgba(245, 245, 247, 0.42);
     --grid: rgba(255, 255, 255, 0.07);
-    --gp: #3987e5;   /* game passes */
-    --dp: #d95926;   /* dev products */
-    --live: #30d158;
-    --radius: 24px;
-    --font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-    --display: "Inter Tight", "Inter", system-ui, sans-serif;
-    --mono: "JetBrains Mono", ui-monospace, monospace;
+    --gp: #34c759;   /* game passes */
+    --dp: #c7c7cc;   /* dev products */
+    --live: #34c759;
+    --radius: 22px;
+    --font: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --display: "Geist", system-ui, sans-serif;
+    --serif: "Instrument Serif", Georgia, serif;
+    --mono: "Geist Mono", ui-monospace, monospace;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--text); }
-  body { font: 15px/1.5 var(--font); -webkit-font-smoothing: antialiased; min-height: 100vh; overflow-x: hidden; }
-
-  /* soft moving light behind the glass */
-  .aura { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
-  .aura span { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0.55; animation: drift 26s ease-in-out infinite alternate; }
-  .aura .a1 { width: 520px; height: 520px; background: #1d4ed8; top: -160px; left: -120px; }
-  .aura .a2 { width: 460px; height: 460px; background: #c2410c; bottom: -180px; right: -100px; animation-delay: -8s; opacity: 0.4; }
-  .aura .a3 { width: 380px; height: 380px; background: #7c3aed; top: 35%; left: 55%; animation-delay: -15s; opacity: 0.3; }
-  @keyframes drift { from { transform: translate(0, 0) scale(1); } to { transform: translate(80px, 60px) scale(1.15); } }
-  @media (prefers-reduced-motion: reduce) { .aura span { animation: none; } }
+  /* green at the top of the page fading to black */
+  html {
+    background-color: #000;
+    background-image:
+      radial-gradient(90% 520px at 50% 0, rgba(52, 199, 89, 0.45), transparent 75%),
+      linear-gradient(180deg, #0c4a24 0, #062a14 260px, #021007 620px, #000 1000px);
+    background-repeat: no-repeat;
+    background-size: 100% 1000px;
+  }
+  body { margin: 0; color: var(--text); font: 15px/1.5 var(--font); -webkit-font-smoothing: antialiased;
+    min-height: 100vh; overflow-x: hidden; }
 
   main { position: relative; z-index: 1; max-width: 1180px; margin: 0 auto; padding: 32px 16px 64px; }
 
@@ -140,15 +141,23 @@ const PAGE = `<!doctype html>
     border-radius: var(--radius);
     backdrop-filter: blur(28px) saturate(180%);
     -webkit-backdrop-filter: blur(28px) saturate(180%);
-    box-shadow: inset 0 1px 0 var(--edge-hi), 0 20px 50px rgba(0, 0, 0, 0.45);
+    box-shadow: inset 0 1px 0 var(--edge-hi), 0 20px 50px rgba(0, 0, 0, 0.5);
   }
+  /* bright outline that fades down from the top edge */
+  .glass::before { content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.08) 45%, rgba(52, 199, 89, 0.3));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude; }
+  .stat .label, .uptime .label, th, .eyebrow, .uptime .u, .stat .hint, .since { font-family: var(--mono); }
+  .stat .label, .stat .hint { font-size: 12px; }
 
   header { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; justify-content: space-between; margin-bottom: 24px; }
   .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2);
     padding: 6px 12px; border-radius: 999px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 0 rgba(48, 209, 88, 0.6); animation: pulse 2s infinite; }
   @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(48, 209, 88, 0); } 100% { box-shadow: 0 0 0 0 rgba(48, 209, 88, 0); } }
-  h1 { font: 700 clamp(32px, 5vw, 52px)/1.05 var(--display); letter-spacing: -0.035em; margin: 14px 0 6px; }
+  h1 { font: 800 clamp(34px, 5.5vw, 58px)/1.02 var(--display); letter-spacing: -0.045em; margin: 14px 0 6px; }
+  h1 em { font: italic 400 1.08em/1 var(--serif); letter-spacing: -0.01em; color: rgba(255, 255, 255, 0.75); }
   .sub { color: var(--text-3); margin: 0; font-size: 14px; }
 
   .uptime { padding: 18px 22px; min-width: 300px; }
@@ -225,12 +234,11 @@ const PAGE = `<!doctype html>
 </style>
 </head>
 <body>
-<div class="aura"><span class="a1"></span><span class="a2"></span><span class="a3"></span></div>
 <main>
   <header>
     <div>
       <span class="eyebrow glass"><span class="dot"></span> Live &middot; updates every 5s</span>
-      <h1>Ebike Police Escape</h1>
+      <h1>Ebike Police Escape <em>sales</em></h1>
       <p class="sub">Game pass &amp; developer product sales &middot; experience 10769399162</p>
     </div>
     <div class="uptime glass">
@@ -303,7 +311,7 @@ const PAGE = `<!doctype html>
   var filter = "all";
   var range = "24h";
   var fmt = new Intl.NumberFormat();
-  var GP = "#3987e5", DP = "#d95926";
+  var GP = "#34c759", DP = "#c7c7cc";
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
