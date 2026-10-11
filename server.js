@@ -129,6 +129,85 @@ async function pollRoblox() {
 pollRoblox();
 setInterval(pollRoblox, 60 * 1000);
 
+// ---- reach & engaged players from Roblox's Open Cloud Analytics API (needs ROBLOX_API_KEY
+// with universe-analytics -> universe.analytics:read for this experience)
+const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY || "";
+const ANALYTICS_DAYS = Number(process.env.ANALYTICS_DAYS) || 28;
+const ANALYTICS_BASE = "https://apis.roblox.com/analytics-query-api/";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The response layout isn't fully documented, so take the last number found under a "value" key
+function lastValue(obj) {
+  let found = null;
+  (function walk(o) {
+    if (Array.isArray(o)) return o.forEach(walk);
+    if (o && typeof o === "object") {
+      for (const [k, v] of Object.entries(o)) {
+        if (k === "value" && typeof v === "number") found = v;
+        else walk(v);
+      }
+    }
+  })(obj);
+  return found;
+}
+
+async function queryMetric(metric, extra = {}) {
+  const end = new Date();
+  const start = new Date(end.getTime() - ANALYTICS_DAYS * 24 * 60 * 60 * 1000);
+  const headers = { "x-api-key": ROBLOX_API_KEY, "Content-Type": "application/json" };
+  let r = await fetch(`${ANALYTICS_BASE}v1/universes/${UNIVERSE_ID}/metrics`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ metric, granularity: "None", startTime: start.toISOString(), endTime: end.toISOString(), ...extra }),
+  });
+  let j = await r.json().catch(() => ({}));
+  if (!r.ok && r.status !== 202) throw new Error(`${metric}: HTTP ${r.status} ${JSON.stringify(j).slice(0, 300)}`);
+  // big queries run in the background: poll until done
+  for (let i = 0; !j.done && j.path && i < 20; i++) {
+    await sleep(3000);
+    r = await fetch(ANALYTICS_BASE + j.path, { headers });
+    j = await r.json().catch(() => ({}));
+  }
+  if (j.error) throw new Error(`${metric}: ${j.error.message || JSON.stringify(j.error)}`);
+  if (!j.done) throw new Error(`${metric}: no result yet`);
+  return { value: lastValue(j.response), response: j.response, raw: JSON.stringify(j.response).slice(0, 500) };
+}
+
+// Highly engaged players = active users in the Medium or High engagement segment
+// (closest match to Audience -> Reach -> "Highly engaged players" in the Creator Dashboard)
+async function queryEngaged() {
+  const res = await queryMetric("DailyActiveUsers", { breakdown: ["UserSegmentationEngagementLevel"] });
+  let total = 0;
+  for (const series of res.response?.values || []) {
+    const level = (series.breakdowns || []).map((b) => b.value).join("");
+    if (level === "Low") continue;
+    for (const point of series.dataPoints || []) total += Number(point.value) || 0;
+  }
+  return { value: total, raw: res.raw };
+}
+
+async function pollAnalytics() {
+  if (!ROBLOX_API_KEY) return;
+  try {
+    // reach = unique users who saw the game, engaged = Medium + High engagement players
+    const reach = await queryMetric("UniqueUsersWithImpressions");
+    const engaged = await queryEngaged();
+    stats.reachAuto = reach.value;
+    stats.engagedAuto = engaged.value;
+    stats.analyticsDays = ANALYTICS_DAYS;
+    stats.analyticsAt = new Date().toISOString();
+    stats.analyticsError = null;
+    stats.analyticsRaw = { reach: reach.raw, engaged: engaged.raw };
+    console.log(`[analytics] reach ${reach.value}, engaged ${engaged.value}`);
+  } catch (err) {
+    stats.analyticsError = err.message;
+    console.error("[analytics]", err.message);
+  }
+  saveStats();
+}
+pollAnalytics();
+setInterval(pollAnalytics, 30 * 60 * 1000);
+
 async function handleStatsUpdate(req, res) {
   if (req.headers["x-api-key"] !== API_KEY) {
     return sendJson(res, 401, { error: "Wrong key" });
@@ -374,7 +453,7 @@ const PAGE = `<!doctype html>
     </div>
     <div class="card glass">
       <div class="card-head">
-        <div><h2>All Ages goal</h2><div class="desc">Engaged players</div></div>
+        <div><h2>Highly engaged players</h2><div class="desc">Publishing reach eligibility</div></div>
         <button class="btn" id="editBtn">Update</button>
       </div>
       <div class="goal-body">
@@ -448,7 +527,7 @@ const PAGE = `<!doctype html>
     <h2>Update game stats</h2>
     <p class="desc">Copy these from your Creator Dashboard. Only you can save them, with your owner key.</p>
     <div class="row2">
-      <label class="field"><span>Engaged players</span><input id="fEngaged" type="number" min="0" inputmode="numeric"></label>
+      <label class="field"><span>Highly engaged</span><input id="fEngaged" type="number" min="0" inputmode="numeric"></label>
       <label class="field"><span>Goal</span><input id="fGoal" type="number" min="1" inputmode="numeric"></label>
     </div>
     <label class="field"><span>Reach</span><input id="fReach" type="number" min="0" inputmode="numeric" placeholder="Leave empty to keep"></label>
@@ -708,18 +787,24 @@ const PAGE = `<!doctype html>
     document.getElementById("visits").textContent = L ? fmt.format(L.visits) : "\\u2013";
     document.getElementById("favs").textContent = L ? fmt.format(L.favorites) : "\\u2013";
     document.getElementById("favHint").textContent = L && L.visits ? (L.favorites / L.visits * 100).toFixed(1) + "% of visits" : "\\u00a0";
-    document.getElementById("reach").textContent = gstats.reach == null ? "\\u2013" : fmt.format(gstats.reach);
-    document.getElementById("reachHint").textContent = gstats.reach == null ? "Press Update to add" : "From Creator Dashboard";
+    // use Roblox analytics numbers when they're available, otherwise the ones typed in with Update
+    var autoTxt = "Auto \\u00b7 last " + (gstats.analyticsDays || 7) + " days";
+    var reach = gstats.reachAuto != null ? gstats.reachAuto : gstats.reach;
+    document.getElementById("reach").textContent = reach == null ? "\\u2013" : fmt.format(reach);
+    document.getElementById("reachHint").textContent = gstats.reachAuto != null ? autoTxt
+      : reach == null ? "Press Update to add" : "Typed in";
 
-    var e = gstats.engaged || 0, goal = Math.max(1, gstats.engagedGoal || 250);
+    var e = (gstats.engagedAuto != null ? gstats.engagedAuto : gstats.engaged) || 0, goal = Math.max(1, gstats.engagedGoal || 250);
     var pct = Math.min(1, e / goal);
     document.getElementById("ringBar").setAttribute("stroke-dashoffset", RING * (1 - pct));
     document.getElementById("engaged").textContent = fmt.format(e);
     document.getElementById("engagedOf").textContent = "of " + fmt.format(goal);
     document.getElementById("goalPct").textContent = Math.floor(pct * 100) + "% there";
-    document.getElementById("goalLeft").textContent = e >= goal ? "Goal reached! All Ages unlocked."
-      : fmt.format(goal - e) + " more engaged players needed for All Ages";
-    document.getElementById("goalUpdated").textContent = gstats.manualUpdated ? "Updated " + shortDate(gstats.manualUpdated) : "";
+    document.getElementById("goalLeft").textContent = e >= goal ? "250 reached! Check Audience \\u2192 Reach for eligibility."
+      : fmt.format(goal - e) + " more highly engaged players to become eligible";
+    document.getElementById("goalUpdated").textContent = gstats.engagedAuto != null
+      ? autoTxt + " \\u00b7 " + shortDate(gstats.analyticsAt)
+      : gstats.manualUpdated ? "Updated " + shortDate(gstats.manualUpdated) : "";
     renderCcu();
   }
 
