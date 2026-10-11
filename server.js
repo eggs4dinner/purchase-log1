@@ -89,12 +89,73 @@ async function handlePurchase(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
+// ---- game stats: CCU/visits/favorites from Roblox's public API, reach/engaged typed in by the owner
+const UNIVERSE_ID = 10769399162;
+const STATS_FILE = path.join(path.dirname(DATA_FILE), "stats.json");
+const CCU_KEEP_MS = 7 * 24 * 60 * 60 * 1000; // keep a week of CCU history
+
+let stats = { engaged: 98, engagedGoal: 250, reach: null, manualUpdated: null, peakCcu: 0, peakAt: null, ccu: [] };
+try {
+  stats = { ...stats, ...JSON.parse(fs.readFileSync(STATS_FILE, "utf8")) };
+} catch {}
+let live = null;
+
+function saveStats() {
+  try {
+    fs.writeFileSync(STATS_FILE, JSON.stringify(stats));
+  } catch (err) {
+    console.error("Could not save stats:", err.message);
+  }
+}
+
+async function pollRoblox() {
+  try {
+    const r = await fetch(`https://games.roblox.com/v1/games?universeIds=${UNIVERSE_ID}`);
+    const g = (await r.json()).data?.[0];
+    if (!g) return;
+    const now = Date.now();
+    live = { playing: g.playing, visits: g.visits, favorites: g.favoritedCount, maxPlayers: g.maxPlayers, at: now };
+    stats.ccu.push([now, g.playing]);
+    stats.ccu = stats.ccu.filter((s) => now - s[0] < CCU_KEEP_MS);
+    if (g.playing > stats.peakCcu) {
+      stats.peakCcu = g.playing;
+      stats.peakAt = now;
+    }
+    saveStats();
+  } catch (err) {
+    console.error("Roblox API poll failed:", err.message);
+  }
+}
+pollRoblox();
+setInterval(pollRoblox, 60 * 1000);
+
+async function handleStatsUpdate(req, res) {
+  if (req.headers["x-api-key"] !== API_KEY) {
+    return sendJson(res, 401, { error: "Wrong key" });
+  }
+  let body;
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    return sendJson(res, 400, { error: "Invalid JSON" });
+  }
+  for (const key of ["engaged", "engagedGoal", "reach"]) {
+    if (body[key] === undefined || body[key] === "") continue;
+    const n = Number(body[key]);
+    if (!Number.isFinite(n) || n < 0) return sendJson(res, 400, { error: `${key} must be a number` });
+    stats[key] = Math.round(n);
+  }
+  stats.manualUpdated = new Date().toISOString();
+  saveStats();
+  sendJson(res, 200, { ok: true });
+}
+
 const PAGE = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ebike Police Escape · Sales</title>
+<title>Ebike Police Escape · Stats</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet">
@@ -231,6 +292,45 @@ const PAGE = `<!doctype html>
   .pill .swatch { width: 8px; height: 8px; border-radius: 50%; }
   .studio { font-size: 11px; color: var(--text-3); margin-left: 6px; border: 1px dashed var(--edge); border-radius: 6px; padding: 1px 6px; }
   .empty { padding: 36px; text-align: center; color: var(--text-3); }
+
+  .section-title { font: 500 12px var(--mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-3); margin: 28px 4px 12px; }
+  .stat .label .dot { width: 6px; height: 6px; }
+
+  .btn { font: 500 13px var(--font); color: var(--text); background: rgba(255, 255, 255, 0.08); border: 1px solid var(--edge);
+    padding: 7px 14px; border-radius: 999px; cursor: pointer; transition: background 0.15s; }
+  .btn:hover { background: rgba(255, 255, 255, 0.14); }
+  .btn.primary { background: var(--gp); color: #00170a; border-color: transparent; font-weight: 600; }
+  .btn.primary:hover { background: #4cd471; }
+
+  .goal-body { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+  .ring { position: relative; width: 156px; height: 156px; flex: none; }
+  .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring circle { fill: none; stroke-width: 12; }
+  .ring .track { stroke: rgba(255, 255, 255, 0.08); }
+  .ring .bar { stroke: var(--gp); stroke-linecap: round; transition: stroke-dashoffset 0.8s ease; filter: drop-shadow(0 0 8px rgba(52, 199, 89, 0.45)); }
+  .ring .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .ring .big { font: 700 40px/1 var(--display); letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+  .ring .of { font: 12px var(--mono); color: var(--text-3); margin-top: 6px; }
+  .goal-text { flex: 1; min-width: 160px; }
+  .goal-text .pct { font: 700 28px/1.1 var(--display); letter-spacing: -0.03em; }
+  .goal-text p { margin: 6px 0 0; color: var(--text-2); font-size: 14px; }
+  .goal-text .small { font: 12px var(--mono); color: var(--text-3); margin-top: 12px; }
+
+  dialog { width: min(380px, calc(100vw - 32px)); padding: 22px; color: var(--text); border-radius: var(--radius);
+    background: rgba(20, 24, 21, 0.82); border: 1px solid var(--edge);
+    backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+    box-shadow: inset 0 1px 0 var(--edge-hi), 0 30px 80px rgba(0, 0, 0, 0.6); }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  dialog h2 { font: 600 18px var(--display); margin: 0 0 4px; }
+  dialog .desc { font-size: 13px; color: var(--text-3); margin: 0 0 16px; }
+  .field { display: block; margin-bottom: 12px; }
+  .field span { display: block; font: 12px var(--mono); color: var(--text-2); margin-bottom: 6px; }
+  .field input { width: 100%; font: 15px var(--font); color: var(--text); background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--edge); border-radius: 12px; padding: 10px 12px; outline: none; }
+  .field input:focus { border-color: var(--gp); box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.25); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+  .err { color: #ff6961; font-size: 13px; min-height: 18px; margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -238,8 +338,8 @@ const PAGE = `<!doctype html>
   <header>
     <div>
       <span class="eyebrow glass"><span class="dot"></span> Live &middot; updates every 5s</span>
-      <h1>Ebike Police Escape <em>sales</em></h1>
-      <p class="sub">Game pass &amp; developer product sales &middot; experience 10769399162</p>
+      <h1>Ebike Police Escape <em>stats</em></h1>
+      <p class="sub">Players, growth &amp; sales &middot; experience 10769399162</p>
     </div>
     <div class="uptime glass">
       <div class="label">Game has been out for</div>
@@ -253,6 +353,45 @@ const PAGE = `<!doctype html>
     </div>
   </header>
 
+  <div class="section-title">Players</div>
+  <section class="stats">
+    <div class="stat glass"><div class="label"><span class="dot"></span>Playing now (CCU)</div><div class="value" id="ccu">&ndash;</div><div class="hint" id="ccuHint">&nbsp;</div></div>
+    <div class="stat glass"><div class="label">Visits</div><div class="value" id="visits">&ndash;</div><div class="hint">All time</div></div>
+    <div class="stat glass"><div class="label">Favorites</div><div class="value" id="favs">&ndash;</div><div class="hint" id="favHint">&nbsp;</div></div>
+    <div class="stat glass"><div class="label">Reach</div><div class="value" id="reach">&ndash;</div><div class="hint" id="reachHint">&nbsp;</div></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card glass">
+      <div class="card-head">
+        <div><h2>Players online</h2><div class="desc">Concurrent players, checked every minute</div></div>
+        <div class="seg" id="ccuRange">
+          <button data-range="24h" class="active">24H</button>
+          <button data-range="7d">7D</button>
+        </div>
+      </div>
+      <div class="chart" id="ccuChart"><svg id="ccuSvg" height="210"></svg><div class="tip" id="ccuTip"></div></div>
+    </div>
+    <div class="card glass">
+      <div class="card-head">
+        <div><h2>All Ages goal</h2><div class="desc">Engaged players</div></div>
+        <button class="btn" id="editBtn">Update</button>
+      </div>
+      <div class="goal-body">
+        <div class="ring">
+          <svg viewBox="0 0 156 156"><circle class="track" cx="78" cy="78" r="64" /><circle class="bar" id="ringBar" cx="78" cy="78" r="64" stroke-dasharray="402.12" stroke-dashoffset="402.12" /></svg>
+          <div class="center"><div class="big" id="engaged">&ndash;</div><div class="of" id="engagedOf">&nbsp;</div></div>
+        </div>
+        <div class="goal-text">
+          <div class="pct" id="goalPct">&nbsp;</div>
+          <p id="goalLeft">&nbsp;</p>
+          <div class="small" id="goalUpdated">&nbsp;</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-title">Sales</div>
   <section class="stats">
     <div class="stat glass"><div class="label">Total Robux</div><div class="value" id="total">0</div><div class="hint" id="perDay">&nbsp;</div></div>
     <div class="stat glass"><div class="label">Purchases</div><div class="value" id="count">0</div><div class="hint" id="buyers">&nbsp;</div></div>
@@ -303,6 +442,24 @@ const PAGE = `<!doctype html>
     </div>
   </section>
 </main>
+
+<dialog id="editDlg">
+  <form id="editForm">
+    <h2>Update game stats</h2>
+    <p class="desc">Copy these from your Creator Dashboard. Only you can save them, with your owner key.</p>
+    <div class="row2">
+      <label class="field"><span>Engaged players</span><input id="fEngaged" type="number" min="0" inputmode="numeric"></label>
+      <label class="field"><span>Goal</span><input id="fGoal" type="number" min="1" inputmode="numeric"></label>
+    </div>
+    <label class="field"><span>Reach</span><input id="fReach" type="number" min="0" inputmode="numeric" placeholder="Leave empty to keep"></label>
+    <label class="field"><span>Owner key (your API_KEY)</span><input id="fKey" type="password" autocomplete="off"></label>
+    <p class="err" id="fErr"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="fCancel">Cancel</button>
+      <button type="submit" class="btn primary">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
   var LAUNCH = new Date(2026, 9, 5, 0, 0, 0); // October 5, 2026 (local time)
@@ -530,12 +687,178 @@ const PAGE = `<!doctype html>
   segmented("range", function (b) { range = b.getAttribute("data-range"); });
   segmented("typeFilter", function (b) { filter = b.getAttribute("data-filter"); });
   document.getElementById("hideStudio").addEventListener("change", render);
-  window.addEventListener("resize", function () { renderChart(visible()); });
+  window.addEventListener("resize", function () { renderChart(visible()); renderCcu(); });
+
+  // ---- game stats (CCU, visits, favorites, reach, engaged)
+  var gstats = null;
+  var ccuRange = "24h";
+  var ccuPts = [], ccuGeom = null;
+  var RING = 402.12;
+
+  function shortDate(t) {
+    return new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function renderGame() {
+    if (!gstats) return;
+    var L = gstats.live;
+    document.getElementById("ccu").textContent = L ? fmt.format(L.playing) : "\\u2013";
+    document.getElementById("ccuHint").textContent = "Peak " + fmt.format(gstats.peakCcu || 0) +
+      (gstats.peakAt ? " \\u00b7 " + shortDate(gstats.peakAt) : "");
+    document.getElementById("visits").textContent = L ? fmt.format(L.visits) : "\\u2013";
+    document.getElementById("favs").textContent = L ? fmt.format(L.favorites) : "\\u2013";
+    document.getElementById("favHint").textContent = L && L.visits ? (L.favorites / L.visits * 100).toFixed(1) + "% of visits" : "\\u00a0";
+    document.getElementById("reach").textContent = gstats.reach == null ? "\\u2013" : fmt.format(gstats.reach);
+    document.getElementById("reachHint").textContent = gstats.reach == null ? "Press Update to add" : "From Creator Dashboard";
+
+    var e = gstats.engaged || 0, goal = Math.max(1, gstats.engagedGoal || 250);
+    var pct = Math.min(1, e / goal);
+    document.getElementById("ringBar").setAttribute("stroke-dashoffset", RING * (1 - pct));
+    document.getElementById("engaged").textContent = fmt.format(e);
+    document.getElementById("engagedOf").textContent = "of " + fmt.format(goal);
+    document.getElementById("goalPct").textContent = Math.floor(pct * 100) + "% there";
+    document.getElementById("goalLeft").textContent = e >= goal ? "Goal reached! All Ages unlocked."
+      : fmt.format(goal - e) + " more engaged players needed for All Ages";
+    document.getElementById("goalUpdated").textContent = gstats.manualUpdated ? "Updated " + shortDate(gstats.manualUpdated) : "";
+    renderCcu();
+  }
+
+  function renderCcu() {
+    if (!gstats) return;
+    var svg = document.getElementById("ccuSvg");
+    var W = svg.clientWidth || 600, H = 210;
+    var padL = 36, padR = 6, padT = 10, padB = 26;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var now = Date.now(), span = ccuRange === "24h" ? DAY : 7 * DAY, t0 = now - span;
+    var pts = (gstats.ccu || []).filter(function (s) { return s[0] >= t0; });
+    // thin out long ranges: keep the highest value in each group
+    if (pts.length > 400) {
+      var step = Math.ceil(pts.length / 400), thin = [];
+      for (var i = 0; i < pts.length; i += step) {
+        var best = pts[i];
+        for (var j = i; j < Math.min(i + step, pts.length); j++) if (pts[j][1] > best[1]) best = pts[j];
+        thin.push(best);
+      }
+      pts = thin;
+    }
+    ccuPts = pts;
+    var max = niceMax(Math.max.apply(null, pts.map(function (p) { return p[1]; }).concat([4])));
+    var x = function (t) { return padL + (t - t0) / span * plotW; };
+    var y = function (v) { return padT + plotH - v / max * plotH; };
+    ccuGeom = { x: x, y: y, padL: padL, padT: padT, plotW: plotW, plotH: plotH, t0: t0, span: span };
+    var parts = ['<defs><linearGradient id="ccuFill" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + GP + '" stop-opacity="0.35" /><stop offset="1" stop-color="' + GP + '" stop-opacity="0" /></linearGradient></defs>'];
+    for (var g = 0; g <= 4; g++) {
+      var val = max * g / 4, gy = y(val);
+      parts.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + gy + '" y2="' + gy + '" stroke="var(--grid)" />');
+      parts.push('<text x="' + (padL - 8) + '" y="' + (gy + 4) + '" text-anchor="end">' + fmt.format(Math.round(val)) + "</text>");
+    }
+    var ticks = Math.max(2, Math.min(6, Math.floor(plotW / 90)));
+    for (var k = 0; k <= ticks; k++) {
+      var tt = t0 + span * k / ticks;
+      var lbl = ccuRange === "24h" ? new Date(tt).toLocaleTimeString([], { hour: "numeric" })
+        : new Date(tt).toLocaleDateString([], { month: "short", day: "numeric" });
+      parts.push('<text x="' + x(tt) + '" y="' + (H - 6) + '" text-anchor="' + (k === 0 ? "start" : k === ticks ? "end" : "middle") + '">' + esc(lbl) + "</text>");
+    }
+    var base = padT + plotH;
+    if (pts.length >= 2) {
+      var line = pts.map(function (p, i) { return (i ? "L" : "M") + x(p[0]).toFixed(1) + "," + y(p[1]).toFixed(1); }).join(" ");
+      parts.push('<path d="' + line + " L" + x(pts[pts.length - 1][0]).toFixed(1) + "," + base + " L" + x(pts[0][0]).toFixed(1) + "," + base + ' Z" fill="url(#ccuFill)" />');
+      parts.push('<path d="' + line + '" fill="none" stroke="' + GP + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />');
+      var last = pts[pts.length - 1];
+      parts.push('<circle cx="' + x(last[0]) + '" cy="' + y(last[1]) + '" r="4" fill="' + GP + '" stroke="#000" stroke-width="2" />');
+    } else {
+      parts.push('<text x="' + (padL + plotW / 2) + '" y="' + (padT + plotH / 2) + '" text-anchor="middle">Collecting data &middot; checks every minute</text>');
+    }
+    parts.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + base + '" y2="' + base + '" stroke="rgba(255,255,255,0.18)" />');
+    parts.push('<g id="ccuHover" style="display:none"><line id="ccuCross" y1="' + padT + '" y2="' + base + '" stroke="rgba(255,255,255,0.35)" stroke-dasharray="3 3" />' +
+      '<circle id="ccuDot" r="5" fill="' + GP + '" stroke="#000" stroke-width="2" /></g>');
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.innerHTML = parts.join("");
+  }
+
+  var ccuChart = document.getElementById("ccuChart"), ccuTip = document.getElementById("ccuTip");
+  ccuChart.addEventListener("mousemove", function (e) {
+    if (!ccuGeom || ccuPts.length < 2) return;
+    var box = ccuChart.getBoundingClientRect();
+    var mx = e.clientX - box.left;
+    var t = ccuGeom.t0 + (mx - ccuGeom.padL) / ccuGeom.plotW * ccuGeom.span;
+    var near = ccuPts[0];
+    for (var i = 1; i < ccuPts.length; i++) if (Math.abs(ccuPts[i][0] - t) < Math.abs(near[0] - t)) near = ccuPts[i];
+    var px = ccuGeom.x(near[0]), py = ccuGeom.y(near[1]);
+    document.getElementById("ccuHover").style.display = "";
+    document.getElementById("ccuCross").setAttribute("x1", px);
+    document.getElementById("ccuCross").setAttribute("x2", px);
+    document.getElementById("ccuDot").setAttribute("cx", px);
+    document.getElementById("ccuDot").setAttribute("cy", py);
+    ccuTip.innerHTML = '<div class="t">' + esc(shortDate(near[0])) + '</div><div class="r"><span><span class="swatch" style="background:' + GP + '"></span>Playing</span><span>' + fmt.format(near[1]) + "</span></div>";
+    var tx = px + 14;
+    if (tx + 180 > box.width) tx = px - 190;
+    ccuTip.style.left = tx + "px";
+    ccuTip.style.top = Math.max(0, py - 30) + "px";
+    ccuTip.style.opacity = 1;
+  });
+  ccuChart.addEventListener("mouseleave", function () {
+    ccuTip.style.opacity = 0;
+    var h = document.getElementById("ccuHover");
+    if (h) h.style.display = "none";
+  });
+  document.getElementById("ccuRange").addEventListener("click", function (e) {
+    var btn = e.target.closest("button");
+    if (!btn) return;
+    this.querySelectorAll("button").forEach(function (b) { b.classList.remove("active"); });
+    btn.classList.add("active");
+    ccuRange = btn.getAttribute("data-range");
+    renderCcu();
+  });
+
+  function loadStats() {
+    fetch("/api/stats")
+      .then(function (r) { return r.json(); })
+      .then(function (data) { gstats = data; renderGame(); })
+      .catch(function (e) { console.error("Could not load stats", e); });
+  }
+
+  // ---- update dialog (owner only, needs the API key)
+  var dlg = document.getElementById("editDlg");
+  function savedKey() { try { return sessionStorage.getItem("ownerKey") || ""; } catch (e) { return ""; } }
+  document.getElementById("editBtn").addEventListener("click", function () {
+    document.getElementById("fEngaged").value = gstats ? gstats.engaged : "";
+    document.getElementById("fGoal").value = gstats ? gstats.engagedGoal : 250;
+    document.getElementById("fReach").value = gstats && gstats.reach != null ? gstats.reach : "";
+    document.getElementById("fKey").value = savedKey();
+    document.getElementById("fErr").textContent = "";
+    dlg.showModal();
+  });
+  document.getElementById("fCancel").addEventListener("click", function () { dlg.close(); });
+  document.getElementById("editForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var key = document.getElementById("fKey").value.trim();
+    var err = document.getElementById("fErr");
+    if (!key) { err.textContent = "Enter your owner key."; return; }
+    fetch("/api/stats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": key },
+      body: JSON.stringify({
+        engaged: document.getElementById("fEngaged").value,
+        engagedGoal: document.getElementById("fGoal").value,
+        reach: document.getElementById("fReach").value
+      })
+    }).then(function (r) {
+      if (r.status === 401) { err.textContent = "Wrong key."; return; }
+      if (!r.ok) { err.textContent = "Could not save. Check the numbers."; return; }
+      try { sessionStorage.setItem("ownerKey", key); } catch (x) {}
+      dlg.close();
+      loadStats();
+    }).catch(function () { err.textContent = "Could not reach the server."; });
+  });
 
   tickUptime();
   setInterval(tickUptime, 1000);
   load();
   setInterval(load, 5000);
+  loadStats();
+  setInterval(loadStats, 30000);
 </script>
 </body>
 </html>`;
@@ -549,6 +872,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/purchases") {
       return sendJson(res, 200, [...purchases].reverse());
+    }
+    if (req.method === "GET" && url.pathname === "/api/stats") {
+      return sendJson(res, 200, { ...stats, live });
+    }
+    if (req.method === "POST" && url.pathname === "/api/stats") {
+      return await handleStatsUpdate(req, res);
     }
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
